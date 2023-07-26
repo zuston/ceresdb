@@ -112,16 +112,17 @@ impl ObjectStore for StoreWithMetrics {
         let _timer = OBJECT_STORE_DURATION_HISTOGRAM.put_multipart.start_timer();
 
         let instant = Instant::now();
-        let loc = location.clone();
-        let store = self.store.clone();
-        let res = self
-            .runtime
-            .spawn(async move { store.put_multipart(&loc).await })
-            .await
-            .map_err(|source| StoreError::Generic {
-                store: METRICS,
-                source: Box::new(source),
-            })?;
+        let res = self.store.put_multipart(location).await;
+        // let loc = location.clone();
+        // let store = self.store.clone();
+        // let res = self
+        //     .runtime
+        //     .spawn(async move { store.put_multipart(&loc).await })
+        //     .await
+        //     .map_err(|source| StoreError::Generic {
+        //         store: METRICS,
+        //         source: Box::new(source),
+        //     })?;
 
         trace!(
             "Object store with metrics put_multipart cost:{}ms, location:{}, thread:{}-{:?}",
@@ -142,31 +143,33 @@ impl ObjectStore for StoreWithMetrics {
 
     async fn get(&self, location: &Path) -> Result<GetResult> {
         let _timer = OBJECT_STORE_DURATION_HISTOGRAM.get.start_timer();
-        let store = self.store.clone();
-        let loc = location.clone();
-        self.runtime
-            .spawn(async move { store.get(&loc).await })
-            .await
-            .map_err(|source| StoreError::Generic {
-                store: METRICS,
-                source: Box::new(source),
-            })?
+        self.store.get(location).await
+        // let store = self.store.clone();
+        // let loc = location.clone();
+        // self.runtime
+        //     .spawn(async move { store.get(&loc).await })
+        //     .await
+        //     .map_err(|source| StoreError::Generic {
+        //         store: METRICS,
+        //         source: Box::new(source),
+        //     })?
     }
 
     async fn get_range(&self, location: &Path, range: Range<usize>) -> Result<Bytes> {
         let _timer = OBJECT_STORE_DURATION_HISTOGRAM.get_range.start_timer();
 
         let instant = Instant::now();
-        let store = self.store.clone();
-        let loc = location.clone();
-        let result = self
-            .runtime
-            .spawn(async move { store.get_range(&loc, range.clone()).await })
-            .await
-            .map_err(|source| StoreError::Generic {
-                store: METRICS,
-                source: Box::new(source),
-            })??;
+        let result = self.store.get_range(location, range).await?;
+        // let store = self.store.clone();
+        // let loc = location.clone();
+        // let result = self
+        //     .runtime
+        //     .spawn(async move { store.get_range(&loc, range.clone()).await })
+        //     .await
+        //     .map_err(|source| StoreError::Generic {
+        //         store: METRICS,
+        //         source: Box::new(source),
+        //     })??;
         trace!(
             "Object store with metrics get_range cost:{}ms, location:{}, thread:{}-{:?}",
             instant.elapsed().as_millis(),
@@ -195,16 +198,15 @@ impl ObjectStore for StoreWithMetrics {
         let _timer = OBJECT_STORE_DURATION_HISTOGRAM.head.start_timer();
 
         let instant = Instant::now();
-        let store = self.store.clone();
-        let loc = location.clone();
-        let response = self
-            .runtime
-            .spawn(async move { store.head(&loc).await })
-            .await
-            .map_err(|source| StoreError::Generic {
-                store: METRICS,
-                source: Box::new(source),
-            })?;
+        let response = self.store.head(location).await;
+        // let response = self
+        //     .runtime
+        //     .spawn(async move { store.head(&loc).await })
+        //     .await
+        //     .map_err(|source| StoreError::Generic {
+        //         store: METRICS,
+        //         source: Box::new(source),
+        //     })?;
 
         trace!(
             "Object store with metrics head cost:{}ms, location:{}",
@@ -216,15 +218,17 @@ impl ObjectStore for StoreWithMetrics {
 
     async fn delete(&self, location: &Path) -> Result<()> {
         let _timer = OBJECT_STORE_DURATION_HISTOGRAM.delete.start_timer();
-        let store = self.store.clone();
-        let loc = location.clone();
-        self.runtime
-            .spawn(async move { store.delete(&loc).await })
-            .await
-            .map_err(|source| StoreError::Generic {
-                store: METRICS,
-                source: Box::new(source),
-            })?
+        self.store.delete(location).await
+        // let store = self.store.clone();
+        // let loc = location.clone();
+
+        // self.runtime
+        //     .spawn(async move { store.delete(&loc).await })
+        //     .await
+        //     .map_err(|source| StoreError::Generic {
+        //         store: METRICS,
+        //         source: Box::new(source),
+        //     })?
     }
 
     async fn list(&self, prefix: Option<&Path>) -> Result<BoxStream<'_, Result<ObjectMeta>>> {
