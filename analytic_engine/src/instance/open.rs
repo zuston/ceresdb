@@ -51,6 +51,7 @@ impl Instance {
         manifest_storages: ManifestStorages,
         wal_manager: WalManagerRef,
         store_picker: ObjectStorePickerRef,
+        store_picker2: ObjectStorePickerRef,
         sst_factory: SstFactoryRef,
     ) -> Result<Arc<Self>> {
         let spaces: Arc<RwLock<Spaces>> = Arc::new(RwLock::new(Spaces::default()));
@@ -74,12 +75,21 @@ impl Instance {
         )
         .await
         .context(OpenManifest)?;
+        let manifest = Arc::new(manifest);
 
         let space_store = Arc::new(SpaceStore {
-            spaces,
-            manifest: Arc::new(manifest),
+            spaces: spaces.clone(),
+            manifest: manifest.clone(),
             wal_manager: wal_manager.clone(),
             store_picker: store_picker.clone(),
+            sst_factory: sst_factory.clone(),
+            meta_cache: ctx.meta_cache.clone(),
+        });
+        let space_store2 = Arc::new(SpaceStore {
+            spaces,
+            manifest: (manifest).clone(),
+            wal_manager: wal_manager.clone(),
+            store_picker: store_picker2.clone(),
             sst_factory,
             meta_cache: ctx.meta_cache.clone(),
         });
@@ -92,7 +102,7 @@ impl Instance {
         };
         let compaction_runtime = ctx.runtimes.compact_runtime.clone();
         let compaction_scheduler = Arc::new(SchedulerImpl::new(
-            space_store.clone(),
+            space_store2,
             compaction_runtime,
             scheduler_config,
             ctx.config.write_sst_max_buffer_size.as_byte() as usize,

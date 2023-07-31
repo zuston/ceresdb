@@ -113,6 +113,8 @@ impl<'a> EngineBuilder<'a> {
     pub async fn build(self) -> Result<TableEngineRef> {
         let opened_storages =
             open_storage(self.config.storage.clone(), self.engine_runtimes.clone()).await?;
+        let opened_storages2 =
+            open_storage(self.config.storage.clone(), self.engine_runtimes.clone()).await?;
         let manifest_storages = ManifestStorages {
             wal_manager: self.opened_wals.manifest_wal.clone(),
             oss_storage: opened_storages.default_store().clone(),
@@ -124,6 +126,7 @@ impl<'a> EngineBuilder<'a> {
             self.opened_wals.data_wal,
             manifest_storages,
             Arc::new(opened_storages),
+            Arc::new(opened_storages2),
         )
         .await?;
         Ok(Arc::new(TableEngineImpl::new(instance)))
@@ -401,6 +404,7 @@ async fn open_instance(
     wal_manager: WalManagerRef,
     manifest_storages: ManifestStorages,
     store_picker: ObjectStorePickerRef,
+    store_picker2: ObjectStorePickerRef,
 ) -> Result<InstanceRef> {
     let meta_cache: Option<MetaCacheRef> = config
         .sst_meta_cache_cap
@@ -417,6 +421,7 @@ async fn open_instance(
         manifest_storages,
         wal_manager,
         store_picker,
+        store_picker2,
         Arc::new(FactoryImpl::default()),
     )
     .await
