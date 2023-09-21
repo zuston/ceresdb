@@ -52,7 +52,7 @@ use crate::{
     sst::factory::{ReadFrequency, SstReadOptions},
     table::{
         data::TableData,
-        version::{ReadView, TableVersion},
+        version::{MemtableStats, ReadView, ReadViewState, TableVersion},
     },
     table_options::TableOptions,
 };
@@ -167,11 +167,21 @@ impl Instance {
             scan_options: self.scan_options.clone(),
         };
 
+        // Get read views.
         let time_range = request.predicate.time_range();
         let version = table_data.current_version();
-        let read_views = self.partition_ssts_and_memtables(time_range, version, table_options);
-        let iter_options = self.make_iter_options(table_options.num_rows_per_row_group);
+        let read_views_state =
+            self.partition_ssts_and_memtables(time_range, version, table_options);
 
+        // Build iterator from read views.
+        let ReadViewsState {
+            read_views,
+            memtable_stats,
+        } = read_views_state;
+
+        table_data.metrics.inc_memtable_num(memtable_stats);
+
+        let iter_options = self.make_iter_options(table_options.num_rows_per_row_group);
         let mut iters = Vec::with_capacity(read_views.len());
         for (idx, read_view) in read_views.into_iter().enumerate() {
             let metrics_collector = request
@@ -236,9 +246,19 @@ impl Instance {
             scan_options: self.scan_options.clone(),
         };
 
+        // Get read views.
         let time_range = request.predicate.time_range();
         let version = table_data.current_version();
-        let read_views = self.partition_ssts_and_memtables(time_range, version, table_options);
+        let read_views_state =
+            self.partition_ssts_and_memtables(time_range, version, table_options);
+
+        // Build iterator from read views.
+        let ReadViewsState {
+            read_views,
+            memtable_stats,
+        } = read_views_state;
+
+        table_data.metrics.inc_memtable_num(memtable_stats);
 
         let mut iters = Vec::with_capacity(read_views.len());
         for (idx, read_view) in read_views.into_iter().enumerate() {
@@ -280,8 +300,12 @@ impl Instance {
         time_range: TimeRange,
         version: &TableVersion,
         table_options: &TableOptions,
-    ) -> Vec<ReadView> {
-        let read_view = version.pick_read_view(time_range);
+    ) -> ReadViewsState {
+        let read_view_state = version.pick_read_view(time_range);
+        let ReadViewState {
+            read_view,
+            memtable_stats,
+        } = read_view_state;
 
         let segment_duration = match table_options.segment_duration {
             Some(v) => v.0,
@@ -289,12 +313,18 @@ impl Instance {
                 // Segment duration is unknown, the table maybe still in sampling phase
                 // or the segment duration is still not applied to the table options,
                 // just return one partition.
-                return vec![read_view];
+                return ReadViewsState {
+                    read_views: vec![read_view],
+                    memtable_stats,
+                };
             }
         };
         if read_view.contains_sampling() {
             // The table contains sampling memtable, just return one partition.
-            return vec![read_view];
+            return ReadViewsState {
+                read_views: vec![read_view],
+                memtable_stats,
+            };
         }
 
         // Collect the aligned ssts and memtables into the map.
@@ -324,7 +354,12 @@ impl Instance {
             entry.memtables.push(memtable);
         }
 
-        read_view_by_time.into_values().collect()
+        let read_views = read_view_by_time.into_values().collect();
+
+        ReadViewsState {
+            read_views,
+            memtable_stats,
+        }
     }
 
     fn make_iter_options(&self, num_rows_per_row_group: usize) -> IterOptions {
@@ -332,6 +367,11 @@ impl Instance {
             batch_size: num_rows_per_row_group,
         })
     }
+}
+
+pub(crate) struct ReadViewsState {
+    pub read_views: Vec<ReadView>,
+    pub memtable_stats: MemtableStats,
 }
 
 struct StreamStateOnMultiIters<I> {

@@ -375,13 +375,26 @@ impl MemTableView {
         time_range: TimeRange,
         mems: &mut MemTableVec,
         sampling_mem: &mut Option<SamplingMemTable>,
-    ) {
+    ) -> MemtableStats {
         self.mutables.memtables_for_read(time_range, mems);
+        let num_mutable = mems.len();
 
         self.immutables.memtables_for_read(time_range, mems);
+        let num_immutable = mems.len() - num_mutable;
 
         *sampling_mem = self.sampling_mem.clone();
+
+        MemtableStats {
+            num_mutable,
+            num_immutable,
+        }
     }
+}
+
+#[derive(Debug, Default)]
+pub struct MemtableStats {
+    pub num_mutable: usize,
+    pub num_immutable: usize,
 }
 
 /// Mutable memtables
@@ -510,7 +523,7 @@ impl Default for ReadView {
     fn default() -> Self {
         Self {
             sampling_mem: None,
-            memtables: Vec::new(),
+            memtables: MemTableVec::default(),
             leveled_ssts: vec![Vec::new(); SST_LEVEL_NUM],
         }
     }
@@ -520,6 +533,11 @@ impl ReadView {
     pub fn contains_sampling(&self) -> bool {
         self.sampling_mem.is_some()
     }
+}
+
+pub struct ReadViewState {
+    pub read_view: ReadView,
+    pub memtable_stats: MemtableStats,
 }
 
 /// Data of TableVersion
@@ -728,18 +746,20 @@ impl TableVersion {
         }
     }
 
-    pub fn pick_read_view(&self, time_range: TimeRange) -> ReadView {
+    pub(crate) fn pick_read_view(&self, time_range: TimeRange) -> ReadViewState {
         let mut sampling_mem = None;
         let mut memtables = MemTableVec::new();
         let mut leveled_ssts = vec![Vec::new(); SST_LEVEL_NUM];
 
-        {
+        let memtable_stats = {
             // Pick memtables for read.
             let inner = self.inner.read().unwrap();
 
-            inner
-                .memtable_view
-                .memtables_for_read(time_range, &mut memtables, &mut sampling_mem);
+            let memtable_stats = inner.memtable_view.memtables_for_read(
+                time_range,
+                &mut memtables,
+                &mut sampling_mem,
+            );
 
             // Pick ssts for read.
             inner
@@ -747,12 +767,19 @@ impl TableVersion {
                 .pick_ssts(time_range, |level, ssts| {
                     leveled_ssts[level.as_usize()].extend_from_slice(ssts)
                 });
-        }
 
-        ReadView {
+            memtable_stats
+        };
+
+        let read_view = ReadView {
             sampling_mem,
             memtables,
             leveled_ssts,
+        };
+
+        ReadViewState {
+            read_view,
+            memtable_stats,
         }
     }
 
@@ -899,12 +926,12 @@ mod tests {
         let flushable_mems = version.pick_memtables_to_flush(last_sequence);
         assert!(flushable_mems.is_empty());
 
-        let read_view = version.pick_read_view(TimeRange::min_to_max());
-        assert!(!read_view.contains_sampling());
+        let read_view_state = version.pick_read_view(TimeRange::min_to_max());
+        assert!(!read_view_state.read_view.contains_sampling());
 
-        assert!(read_view.sampling_mem.is_none());
-        assert!(read_view.memtables.is_empty());
-        for ssts in read_view.leveled_ssts {
+        assert!(read_view_state.read_view.sampling_mem.is_none());
+        assert!(read_view_state.read_view.memtables.is_empty());
+        for ssts in read_view_state.read_view.leveled_ssts {
             assert!(ssts.is_empty());
         }
 
@@ -964,9 +991,12 @@ mod tests {
         assert_eq!(memtable_id, actual_memtable.id);
 
         // Sampling memtable should always be read.
-        let read_view = version.pick_read_view(TimeRange::new(0.into(), 123.into()).unwrap());
-        assert!(read_view.contains_sampling());
-        assert_eq!(memtable_id, read_view.sampling_mem.unwrap().id);
+        let read_view_state = version.pick_read_view(TimeRange::new(0.into(), 123.into()).unwrap());
+        assert!(read_view_state.read_view.contains_sampling());
+        assert_eq!(
+            memtable_id,
+            read_view_state.read_view.sampling_mem.unwrap().id
+        );
 
         let last_sequence = 1000;
         let flushable_mems = version.pick_memtables_to_flush(last_sequence);
@@ -1058,10 +1088,13 @@ mod tests {
             TimeRange::bucket_of(now, table_options::DEFAULT_SEGMENT_DURATION).unwrap();
 
         // Sampling memtable still readable after freezed.
-        let read_view = version.pick_read_view(time_range);
-        assert!(read_view.contains_sampling());
-        assert_eq!(memtable_id1, read_view.sampling_mem.as_ref().unwrap().id);
-        assert!(read_view.sampling_mem.unwrap().freezed);
+        let read_view_state = version.pick_read_view(time_range);
+        assert!(read_view_state.read_view.contains_sampling());
+        assert_eq!(
+            memtable_id1,
+            read_view_state.read_view.sampling_mem.as_ref().unwrap().id
+        );
+        assert!(read_view_state.read_view.sampling_mem.unwrap().freezed);
 
         let memtable = MemTableMocker.build();
         let memtable_id2 = 2;
@@ -1083,10 +1116,13 @@ mod tests {
         assert_eq!(memtable_id2, mutable.id);
 
         // Need to read sampling memtable and mutable memtable.
-        let read_view = version.pick_read_view(time_range);
-        assert_eq!(memtable_id1, read_view.sampling_mem.as_ref().unwrap().id);
-        assert_eq!(1, read_view.memtables.len());
-        assert_eq!(memtable_id2, read_view.memtables[0].id);
+        let read_view_state = version.pick_read_view(time_range);
+        assert_eq!(
+            memtable_id1,
+            read_view_state.read_view.sampling_mem.as_ref().unwrap().id
+        );
+        assert_eq!(1, read_view_state.read_view.memtables.len());
+        assert_eq!(memtable_id2, read_view_state.read_view.memtables[0].id);
 
         // Switch mutable memtable.
         assert!(version.suggest_duration().is_none());
@@ -1153,11 +1189,11 @@ mod tests {
         version.apply_edit(edit);
 
         // Only pick ssts after flushed.
-        let read_view = version.pick_read_view(time_range);
-        assert!(!read_view.contains_sampling());
-        assert!(read_view.sampling_mem.is_none());
-        assert!(read_view.memtables.is_empty());
-        assert_eq!(1, read_view.leveled_ssts[0].len());
-        assert_eq!(file_id, read_view.leveled_ssts[0][0].id());
+        let read_view_state = version.pick_read_view(time_range);
+        assert!(!read_view_state.read_view.contains_sampling());
+        assert!(read_view_state.read_view.sampling_mem.is_none());
+        assert!(read_view_state.read_view.memtables.is_empty());
+        assert_eq!(1, read_view_state.read_view.leveled_ssts[0].len());
+        assert_eq!(file_id, read_view_state.read_view.leveled_ssts[0][0].id());
     }
 }

@@ -26,10 +26,12 @@ use lazy_static::lazy_static;
 use prometheus::{
     exponential_buckets,
     local::{LocalHistogram, LocalHistogramTimer},
-    register_histogram, register_histogram_vec, register_int_counter, Histogram, HistogramTimer,
-    HistogramVec, IntCounter,
+    register_histogram, register_histogram_vec, register_int_counter, register_int_counter_vec,
+    Histogram, HistogramTimer, HistogramVec, IntCounter, IntCounterVec,
 };
 use table_engine::table::TableStats;
+
+use crate::table::version::MemtableStats;
 
 const KB: f64 = 1024.0;
 
@@ -59,6 +61,14 @@ lazy_static! {
         "Read request counter of table"
     )
     .unwrap();
+
+    static ref TABLE_READ_MEMTABLE_COUNTER: IntCounterVec = register_int_counter_vec!(
+        "table_read_memtable_counter",
+        "Read memtable counter of table",
+        &["type"]
+    )
+    .unwrap();
+
     // End of counters.
 
     // Histograms:
@@ -164,6 +174,9 @@ pub struct Metrics {
     table_write_flush_wait_duration: Histogram,
     table_write_execute_duration: Histogram,
     table_write_total_duration: Histogram,
+
+    table_read_mutable_memtable: IntCounter,
+    table_read_immutable_memtable: IntCounter,
 }
 
 impl Default for Metrics {
@@ -198,6 +211,11 @@ impl Default for Metrics {
                 .with_label_values(&["execute"]),
             table_write_total_duration: TABLE_WRITE_DURATION_HISTOGRAM
                 .with_label_values(&["total"]),
+
+            table_read_mutable_memtable: TABLE_READ_MEMTABLE_COUNTER
+                .with_label_values(&["mutable"]),
+            table_read_immutable_memtable: TABLE_READ_MEMTABLE_COUNTER
+                .with_label_values(&["immutable"]),
         }
     }
 }
@@ -325,6 +343,14 @@ impl Metrics {
             flush_sst_num_histogram: TABLE_FLUSH_SST_NUM_HISTOGRAM.local(),
             flush_sst_size_histogram: TABLE_FLUSH_SST_SIZE_HISTOGRAM.local(),
         }
+    }
+
+    #[inline]
+    pub fn inc_memtable_num(&self, stats: MemtableStats) {
+        self.table_read_mutable_memtable
+            .inc_by(stats.num_mutable as u64);
+        self.table_read_immutable_memtable
+            .inc_by(stats.num_immutable as u64);
     }
 }
 
