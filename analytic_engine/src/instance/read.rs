@@ -29,7 +29,7 @@ use common_types::{
 };
 use futures::stream::Stream;
 use generic_error::BoxError;
-use log::debug;
+use log::{debug, info};
 use macros::define_result;
 use snafu::{ResultExt, Snafu};
 use table_engine::{
@@ -258,6 +258,10 @@ impl Instance {
             memtable_stats,
         } = read_views_state;
 
+        info!(
+            "Instance scan memtable, request_id:{}, memtable_stats:{memtable_stats:?}",
+            request.request_id
+        );
         table_data.metrics.inc_memtable_num(memtable_stats);
 
         let mut iters = Vec::with_capacity(read_views.len());
