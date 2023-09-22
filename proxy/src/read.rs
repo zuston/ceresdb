@@ -44,9 +44,10 @@ use crate::{
     dedup_requests::{ExecutionGuard, RequestNotifiers, RequestResult},
     error::{ErrNoCause, ErrWithCause, Error, Internal, InternalNoCause, Result},
     forward::{ForwardRequest, ForwardResult},
-    maybe_slow_log,
+    failed_query,
+    maybe_slow_query,
     metrics::GRPC_HANDLER_COUNTER_VEC,
-    slow_query::SlowTimer,
+    query_log::SlowTimer,
     Context, Proxy,
 };
 
@@ -82,10 +83,15 @@ impl Proxy {
             }
         };
 
-        Ok(SqlResponse::Local(
-            self.fetch_sql_query_output(ctx, schema, sql, enable_partition_table_access)
-                .await?,
-        ))
+        let output = self
+            .fetch_sql_query_output(ctx, schema, sql, enable_partition_table_access)
+            .await
+            .map_err(|e| {
+                failed_query!("Failed query, request_id:{}, sql:{}", ctx.request_id, sql);
+                e
+            })?;
+
+        Ok(SqlResponse::Local(output))
     }
 
     pub(crate) async fn dedup_handle_sql(
@@ -256,14 +262,17 @@ impl Proxy {
         })?;
 
         let cost = slow_timer.elapsed();
-        maybe_slow_log!(
-            slow_timer,
+        info!(
             "Handle sql query finished, sql:{}, elapsed:{:?}, catalog:{}, schema:{}, ctx:{:?}",
-            sql,
+            sql, cost, catalog, schema, ctx
+        );
+
+        maybe_slow_query!(
+            slow_timer,
+            "Slow query, request_id:{}, elapsed:{:?}, sql:{}",
+            ctx.request_id,
             cost,
-            catalog,
-            schema,
-            ctx
+            sql,
         );
 
         match &output {
