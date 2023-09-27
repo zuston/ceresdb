@@ -101,7 +101,7 @@ impl Resolver {
             return Ok(Arc::new(ResolvedPartitionedScan::new(
                 self.remote_executor.clone(),
                 remote_plans,
-                metrics_collector
+                metrics_collector,
             )));
         }
 

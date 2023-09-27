@@ -655,6 +655,15 @@ impl RemoteEngineService for RemoteEngineServiceImpl {
         &self,
         request: Request<ExecutePlanRequest>,
     ) -> std::result::Result<Response<Self::ExecutePhysicalPlanStream>, Status> {
+        if let Some(table) = &request.get_ref().table {
+            self.hotspot_recorder
+                .send_msg_or_log(
+                    "inc_remote_plan_reqs",
+                    Message::Query(format_hot_key(&table.schema, &table.table)),
+                )
+                .await
+        }
+
         let record_stream_result =
             self.execute_physical_plan_internal(request)
                 .await

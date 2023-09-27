@@ -34,15 +34,16 @@ use datafusion::{
         coalesce_partitions::CoalescePartitionsExec,
         displayable,
         filter::FilterExec,
+        metrics::{Count, MetricValue, MetricsSet},
         projection::ProjectionExec,
         repartition::RepartitionExec,
-        DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, RecordBatchStream,
-        SendableRecordBatchStream as DfSendableRecordBatchStream, Statistics, metrics::{MetricsSet, MetricValue, Count}, Metric,
+        DisplayAs, DisplayFormatType, ExecutionPlan, Metric, Partitioning, RecordBatchStream,
+        SendableRecordBatchStream as DfSendableRecordBatchStream, Statistics,
     },
 };
 use futures::{future::BoxFuture, FutureExt, Stream, StreamExt};
 use table_engine::{remote::model::TableIdentifier, table::ReadRequest};
-use trace_metric::{MetricsCollector, TraceMetricWhenDrop, collector::FormatCollectorVisitor};
+use trace_metric::{collector::FormatCollectorVisitor, MetricsCollector, TraceMetricWhenDrop};
 
 use crate::dist_sql_query::RemotePhysicalPlanExecutor;
 
@@ -184,9 +185,10 @@ impl ResolvedPartitionedScan {
             plan_ctxs: new_plan_ctxs,
         });
         let plan = ResolvedPartitionedScan::new_with_details(
-            remote_exec_ctx, 
-            can_push_down_more, 
-            self.metrics_collector.clone());
+            remote_exec_ctx,
+            can_push_down_more,
+            self.metrics_collector.clone(),
+        );
 
         Ok(Arc::new(plan))
     }
@@ -204,7 +206,11 @@ impl ResolvedPartitionedScan {
         Self::new_with_details(remote_exec_ctx, true, metrics_collector)
     }
 
-    pub fn new_with_details(remote_exec_ctx: Arc<RemoteExecContext>, pushing_down: bool, metrics_collector: MetricsCollector) -> Self {
+    pub fn new_with_details(
+        remote_exec_ctx: Arc<RemoteExecContext>,
+        pushing_down: bool,
+        metrics_collector: MetricsCollector,
+    ) -> Self {
         Self {
             remote_exec_ctx,
             pushing_down,
