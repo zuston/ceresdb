@@ -45,7 +45,7 @@ use futures::{future::BoxFuture, FutureExt, Stream, StreamExt};
 use table_engine::{remote::model::TableIdentifier, table::ReadRequest};
 use trace_metric::{collector::FormatCollectorVisitor, MetricsCollector, TraceMetricWhenDrop};
 
-use crate::dist_sql_query::RemotePhysicalPlanExecutor;
+use crate::{dist_sql_query::RemotePhysicalPlanExecutor, metrics::PUSH_DOWN_PLAN_COUNTER};
 
 /// Placeholder of partitioned table's scan plan
 /// It is inexecutable actually and just for carrying the necessary information
@@ -263,6 +263,7 @@ impl PushDownAble {
     pub fn try_new(plan: Arc<dyn ExecutionPlan>) -> Option<Self> {
         if let Some(aggr) = plan.as_any().downcast_ref::<AggregateExec>() {
             if *aggr.mode() == AggregateMode::Partial {
+                PUSH_DOWN_PLAN_COUNTER.with_label_values(&["aggr"]).inc();
                 Some(Self::Terminated(plan))
             } else {
                 None
