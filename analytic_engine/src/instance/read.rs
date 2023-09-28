@@ -158,6 +158,8 @@ impl Instance {
         let sequence = table_data.last_sequence();
         let projected_schema = request.projected_schema.clone();
         let sst_read_options = SstReadOptions {
+            scanned_table: table_data.name.clone(),
+            scan_for_compaction: false,
             frequency: ReadFrequency::Frequent,
             projected_schema: projected_schema.clone(),
             predicate: request.predicate.clone(),
@@ -237,6 +239,8 @@ impl Instance {
         let projected_schema = request.projected_schema.clone();
 
         let sst_read_options = SstReadOptions {
+            scanned_table: table_data.name.clone(),
+            scan_for_compaction: false,
             frequency: ReadFrequency::Frequent,
             projected_schema: projected_schema.clone(),
             predicate: request.predicate.clone(),
