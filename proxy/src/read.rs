@@ -15,6 +15,7 @@
 //! Contains common methods used by the read process.
 
 use std::{
+    cmp::Ordering,
     env,
     str::FromStr,
     sync::Arc,
@@ -50,15 +51,6 @@ use crate::{
     query_log::SlowTimer,
     Context, Proxy,
 };
-
-const CERESDB_SLOW_THRESHOLD: &str = "CERESDB_SLOW_THRESHOLD";
-
-fn slow_threshold() -> Duration {
-    let readable = env::var(CERESDB_SLOW_THRESHOLD).unwrap_or("60s".to_string());
-    let readable = ReadableDuration::from_str(&readable)
-        .unwrap_or(ReadableDuration::from(Duration::from_secs(60)));
-    readable.0
-}
 
 pub enum SqlResponse {
     Forwarded(SqlQueryResponse),
@@ -180,7 +172,12 @@ impl Proxy {
         enable_partition_table_access: bool,
     ) -> Result<Output> {
         let request_id = ctx.request_id;
-        let slow_timer = SlowTimer::new(slow_threshold());
+        let slow_threshold_duration = self
+            .instance()
+            .dyn_config
+            .slow_threshold
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let slow_timer: SlowTimer = SlowTimer::with_slow_threshold_s(slow_threshold_duration);
         let deadline = ctx.timeout.map(|t| slow_timer.now() + t);
         let catalog = self.instance.catalog_manager.default_catalog_name();
 
