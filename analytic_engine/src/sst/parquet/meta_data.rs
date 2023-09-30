@@ -14,7 +14,7 @@
 
 // MetaData for SST based on parquet.
 
-use std::{fmt, ops::Index, sync::Arc};
+use std::{collections::HashSet, fmt, ops::Index, sync::Arc};
 
 use bytes_ext::Bytes;
 use ceresdbproto::{schema as schema_pb, sst as sst_pb};
@@ -348,12 +348,14 @@ pub struct ParquetMetaData {
     pub max_sequence: SequenceNumber,
     pub schema: Schema,
     pub parquet_filter: Option<ParquetFilter>,
+    pub column_values: Vec<Option<ColumnValue>>,
 }
 
 pub type ParquetMetaDataRef = Arc<ParquetMetaData>;
 
 impl From<MetaData> for ParquetMetaData {
     fn from(meta: MetaData) -> Self {
+        let num_columns = meta.schema.num_columns();
         Self {
             min_key: meta.min_key,
             max_key: meta.max_key,
@@ -361,6 +363,7 @@ impl From<MetaData> for ParquetMetaData {
             max_sequence: meta.max_sequence,
             schema: meta.schema,
             parquet_filter: None,
+            column_values: vec![None; num_columns],
         }
     }
 }
@@ -397,6 +400,7 @@ impl fmt::Debug for ParquetMetaData {
             .field("time_range", &self.time_range)
             .field("max_sequence", &self.max_sequence)
             .field("schema", &self.schema)
+            .field("column_values", &self.column_values)
             .field(
                 "filter_size",
                 &self
@@ -420,6 +424,13 @@ impl From<ParquetMetaData> for sst_pb::ParquetMetaData {
             filter: src.parquet_filter.map(|v| v.into()),
             // collapsible_cols_idx is used in hybrid format ,and it's deprecated.
             collapsible_cols_idx: Vec::new(),
+            column_values: src
+                .column_values
+                .into_iter()
+                .map(|col| sst_pb::ColumnValue {
+                    value: col.map(|col| col.into()),
+                })
+                .collect(),
         }
     }
 }
@@ -437,6 +448,15 @@ impl TryFrom<sst_pb::ParquetMetaData> for ParquetMetaData {
             Schema::try_from(schema).context(ConvertTableSchema)?
         };
         let parquet_filter = src.filter.map(ParquetFilter::try_from).transpose()?;
+        let column_values = if src.column_values.is_empty() {
+            // For old version sst, reset None to all columns.
+            vec![None; schema.num_columns()]
+        } else {
+            src.column_values
+                .into_iter()
+                .map(|v| v.value.map(|v| v.into()))
+                .collect()
+        };
 
         Ok(Self {
             min_key: src.min_key.into(),
@@ -445,7 +465,34 @@ impl TryFrom<sst_pb::ParquetMetaData> for ParquetMetaData {
             max_sequence: src.max_sequence,
             schema,
             parquet_filter,
+            column_values,
         })
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum ColumnValue {
+    StringValue(HashSet<String>),
+}
+
+impl From<ColumnValue> for sst_pb::column_value::Value {
+    fn from(value: ColumnValue) -> Self {
+        match value {
+            ColumnValue::StringValue(values) => {
+                let values = values.into_iter().collect();
+                sst_pb::column_value::Value::StringSet(sst_pb::column_value::StringSet { values })
+            }
+        }
+    }
+}
+
+impl From<sst_pb::column_value::Value> for ColumnValue {
+    fn from(value: sst_pb::column_value::Value) -> Self {
+        match value {
+            sst_pb::column_value::Value::StringSet(ss) => {
+                ColumnValue::StringValue(HashSet::from_iter(ss.values))
+            }
+        }
     }
 }
 

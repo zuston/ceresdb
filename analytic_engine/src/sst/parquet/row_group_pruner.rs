@@ -14,11 +14,18 @@
 
 // Row group pruner.
 
-use std::cmp::Ordering;
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+};
 
 use arrow::datatypes::SchemaRef;
 use common_types::datum::Datum;
-use datafusion::{prelude::Expr, scalar::ScalarValue};
+use datafusion::{
+    logical_expr::Operator,
+    prelude::{lit, Expr},
+    scalar::ScalarValue,
+};
 use log::debug;
 use parquet::file::metadata::RowGroupMetaData;
 use parquet_ext::prune::{
@@ -28,6 +35,7 @@ use parquet_ext::prune::{
 use snafu::ensure;
 use trace_metric::{MetricsCollector, TraceMetricWhenDrop};
 
+use super::meta_data::ColumnValue;
 use crate::sst::{
     parquet::meta_data::ParquetFilter,
     reader::error::{OtherNoCause, Result},
@@ -58,10 +66,116 @@ pub struct RowGroupPruner<'a> {
     schema: &'a SchemaRef,
     row_groups: &'a [RowGroupMetaData],
     parquet_filter: Option<&'a ParquetFilter>,
-    predicates: &'a [Expr],
+    predicates: Vec<Expr>,
     metrics: Metrics,
 }
 
+fn rewrite_expr(expr: Expr, column_values: &HashMap<String, Option<ColumnValue>>) -> Expr {
+    let expr = match expr {
+        // column not in (v1,v2,v3)
+        // ```plaintext
+        // [InList(InList { expr: Column(Column { relation: None, name: "name" }),
+        //                  list: [Literal(Utf8("v1")), Literal(Utf8("v2")), Literal(Utf8("v3"))],
+        //                  negated: true })]
+        // ```
+        Expr::InList(in_list) => {
+            if !in_list.negated {
+                return Expr::InList(in_list);
+            }
+
+            let column_name = match *in_list.expr.clone() {
+                Expr::Column(column) => column.name.to_string(),
+                _ => return Expr::InList(in_list),
+            };
+
+            let all_possible_values = if let Some(v) = column_values.get(&column_name) {
+                v
+            } else {
+                return Expr::InList(in_list);
+            };
+            let all_possible_values = if let Some(v) = all_possible_values {
+                match v {
+                    ColumnValue::StringValue(sv) => sv,
+                }
+            } else {
+                return Expr::InList(in_list);
+            };
+
+            let mut not_values = HashSet::new();
+            for item in &in_list.list {
+                match item {
+                    Expr::Literal(scalar_value) => match scalar_value {
+                        ScalarValue::Utf8(v) | ScalarValue::LargeUtf8(v) => {
+                            if let Some(v) = v {
+                                not_values.insert(v.to_string());
+                            }
+                        }
+                        _ => return Expr::InList(in_list),
+                    },
+                    _ => return Expr::InList(in_list),
+                }
+            }
+            let wanted_values = all_possible_values.difference(&not_values);
+            let wanted_values = wanted_values.into_iter().map(lit).collect();
+            datafusion::logical_expr::in_list(*in_list.expr, wanted_values, false)
+        }
+        // column != value
+        // ```plaintext
+        // [BinaryExpr(BinaryExpr { left: Column(Column { relation: None, name: "name" }),
+        //                          op: NotEq,
+        //                          right: Literal(Utf8("value")) })]
+        // ```
+        Expr::BinaryExpr(binary_expr) => {
+            if binary_expr.op != Operator::NotEq {
+                return Expr::BinaryExpr(binary_expr);
+            }
+
+            let column_name = match *binary_expr.left.clone() {
+                Expr::Column(column) => column.name.to_string(),
+                _ => return Expr::BinaryExpr(binary_expr),
+            };
+            let all_possible_values = if let Some(v) = column_values.get(&column_name) {
+                v
+            } else {
+                return Expr::BinaryExpr(binary_expr);
+            };
+            let all_possible_values = if let Some(v) = all_possible_values {
+                match v {
+                    ColumnValue::StringValue(sv) => sv,
+                }
+            } else {
+                return Expr::BinaryExpr(binary_expr);
+            };
+            let not_value = match *binary_expr.right.clone() {
+                Expr::Literal(scalar_value) => match scalar_value {
+                    ScalarValue::Utf8(v) | ScalarValue::LargeUtf8(v) => {
+                        if let Some(v) = v {
+                            v.to_string()
+                        } else {
+                            return Expr::BinaryExpr(binary_expr);
+                        }
+                    }
+                    _ => return Expr::BinaryExpr(binary_expr),
+                },
+                _ => return Expr::BinaryExpr(binary_expr),
+            };
+            let wanted_values = all_possible_values
+                .iter()
+                .filter_map(|value| {
+                    if value == &not_value {
+                        None
+                    } else {
+                        Some(lit(value))
+                    }
+                })
+                .collect();
+            datafusion::logical_expr::in_list(*binary_expr.left, wanted_values, false)
+        }
+        _ => expr,
+    };
+
+    expr
+}
 impl<'a> RowGroupPruner<'a> {
     // TODO: DataFusion already change predicates to PhyscialExpr, we should keep up
     // with upstream.
@@ -72,12 +186,30 @@ impl<'a> RowGroupPruner<'a> {
         parquet_filter: Option<&'a ParquetFilter>,
         predicates: &'a [Expr],
         metrics_collector: Option<MetricsCollector>,
+        column_values: &'a [Option<ColumnValue>],
     ) -> Result<Self> {
         if let Some(f) = parquet_filter {
             ensure!(f.len() == row_groups.len(), OtherNoCause {
                 msg: format!("expect sst_filters.len() == row_groups.len(), num_sst_filters:{}, num_row_groups:{}", f.len(), row_groups.len()),
             });
         }
+
+        ensure!(column_values.len() == schema.fields.len(), OtherNoCause {
+            msg: format!("expect column_value.len() == schema_fields.len(), num_sst_filters:{}, num_row_groups:{}", column_values.len(), schema.fields.len()),
+        });
+
+        let column_values = schema
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.name().to_string(), column_values[i].clone()))
+            .collect();
+        debug!("Pruner origin predicates:{predicates:?}");
+        let predicates = predicates
+            .iter()
+            .map(|expr| rewrite_expr(expr.clone(), &column_values))
+            .collect();
+        debug!("Pruner predicates after rewrite:{predicates:?}, column_values:{column_values:?}");
 
         let metrics = Metrics {
             use_custom_filter: parquet_filter.is_some(),
@@ -139,7 +271,7 @@ impl<'a> RowGroupPruner<'a> {
     }
 
     fn prune_by_min_max(&self) -> Vec<usize> {
-        min_max::prune_row_groups(self.schema.clone(), self.predicates, self.row_groups)
+        min_max::prune_row_groups(self.schema.clone(), &self.predicates, self.row_groups)
     }
 
     /// Prune row groups according to the filter.
@@ -161,7 +293,7 @@ impl<'a> RowGroupPruner<'a> {
 
         equal::prune_row_groups(
             self.schema.clone(),
-            self.predicates,
+            &self.predicates,
             self.row_groups.len(),
             is_equal,
         )

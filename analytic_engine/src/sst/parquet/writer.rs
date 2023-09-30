@@ -14,8 +14,12 @@
 
 //! Sst writer implementation based on parquet.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
-use common_types::{record_batch::RecordBatchWithKey, request_id::RequestId, time::TimeRange};
+use common_types::{
+    datum::DatumKind, record_batch::RecordBatchWithKey, request_id::RequestId, time::TimeRange,
+};
 use datafusion::parquet::basic::Compression;
 use futures::StreamExt;
 use generic_error::BoxError;
@@ -25,7 +29,7 @@ use parquet::data_type::AsBytes;
 use snafu::{OptionExt, ResultExt};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use super::meta_data::RowGroupFilter;
+use super::meta_data::{ColumnValue, RowGroupFilter};
 use crate::{
     sst::{
         factory::{ObjectStorePickerRef, SstWriteOptions},
@@ -42,6 +46,8 @@ use crate::{
     table::sst_util,
     table_options::StorageFormat,
 };
+
+const KEEP_COLUMN_VALUE_THRESHOLD: usize = 100;
 
 /// The implementation of sst based on parquet and object storage.
 #[derive(Debug)]
@@ -91,6 +97,7 @@ struct RecordBatchGroupWriter {
     input_exhausted: bool,
     // Time range of rows, not aligned to segment.
     real_time_range: Option<TimeRange>,
+    column_values: Vec<Option<ColumnValue>>,
 }
 
 impl RecordBatchGroupWriter {
@@ -103,6 +110,20 @@ impl RecordBatchGroupWriter {
         compression: Compression,
         level: Level,
     ) -> Self {
+        let column_values: Vec<Option<ColumnValue>> = meta_data
+            .schema
+            .columns()
+            .iter()
+            .map(|col| {
+                // Only keep string values now.
+                if matches!(col.data_type, DatumKind::String) {
+                    Some(ColumnValue::StringValue(HashSet::new()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         Self {
             request_id,
             input,
@@ -113,6 +134,7 @@ impl RecordBatchGroupWriter {
             level,
             input_exhausted: false,
             real_time_range: None,
+            column_values,
         }
     }
 
@@ -203,6 +225,38 @@ impl RecordBatchGroupWriter {
         !self.level.is_min()
     }
 
+    fn update_column_values(&mut self, record_batch: &RecordBatchWithKey) {
+        for (col_idx, col_values) in self.column_values.iter_mut().enumerate() {
+            if let Some(values) = col_values {
+                match values {
+                    ColumnValue::StringValue(sv) => {
+                        // when there are too many values, don't keep this column values any more.
+                        if sv.len() > KEEP_COLUMN_VALUE_THRESHOLD {
+                            *col_values = None;
+                        }
+                    }
+                }
+            }
+
+            let col_values = match col_values {
+                None => continue,
+                Some(v) => v,
+            };
+            let rows_num = record_batch.num_rows();
+            let column_block = record_batch.column(col_idx);
+            for row_idx in 0..rows_num {
+                match col_values {
+                    ColumnValue::StringValue(ss) => {
+                        let datum = column_block.datum(row_idx);
+                        if let Some(v) = datum.as_str() {
+                            ss.insert(v.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn update_time_range(&mut self, current_range: Option<TimeRange>) {
         if let Some(current_range) = current_range {
             if let Some(real_range) = self.real_time_range {
@@ -264,6 +318,7 @@ impl RecordBatchGroupWriter {
                     datum_kind: column_block.datum_kind(),
                 })?;
                 self.update_time_range(ts_col.time_range());
+                self.update_column_values(&record_batch);
 
                 arrow_row_group.push(record_batch.into_record_batch().into_arrow_record_batch());
             }
@@ -285,6 +340,10 @@ impl RecordBatchGroupWriter {
             if let Some(range) = self.real_time_range {
                 parquet_meta_data.time_range = range;
             }
+            // TODO: when all compaction input SST files already have column_values, we can
+            // merge them from meta_data directly, calculate them here waste CPU
+            // cycles.
+            parquet_meta_data.column_values = self.column_values;
             parquet_meta_data
         };
 
@@ -492,6 +551,7 @@ mod tests {
             let sst_file_path = Path::from("data.par");
 
             let schema = build_schema_with_dictionary();
+            let num_column = schema.num_columns();
             let reader_projected_schema = ProjectedSchema::no_projection(schema.clone());
             let mut sst_meta = MetaData {
                 min_key: Bytes::from_static(b"100"),
@@ -599,6 +659,7 @@ mod tests {
                 // sst filter is built insider sst writer, so overwrite to default for
                 // comparison.
                 sst_meta_readback.parquet_filter = Default::default();
+                sst_meta_readback.column_values = vec![None; num_column];
                 // time_range is built insider sst writer, so overwrite it for
                 // comparison.
                 sst_meta.time_range = sst_info.time_range;
