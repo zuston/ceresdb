@@ -90,27 +90,30 @@ pub fn file_drainer(path: &Option<String>) -> Option<CeresFormat<PlainDecorator<
 }
 
 /// Dispatcher for logs
-pub struct LogDispatcher<N, S, F> {
+pub struct LogDispatcher<N, S, F, T> {
     normal: N,
     slow: Option<S>,
     failed: Option<F>,
+    table_stats: Option<T>,
 }
 
-impl<N: Drain, S: Drain, F: Drain> LogDispatcher<N, S, F> {
-    pub fn new(normal: N, slow: Option<S>, failed: Option<F>) -> Self {
+impl<N: Drain, S: Drain, F: Drain, T: Drain> LogDispatcher<N, S, F, T> {
+    pub fn new(normal: N, slow: Option<S>, failed: Option<F>, table_stats: Option<T>) -> Self {
         Self {
             normal,
             slow,
             failed,
+            table_stats,
         }
     }
 }
 
-impl<N, S, F> Drain for LogDispatcher<N, S, F>
+impl<N, S, F, T> Drain for LogDispatcher<N, S, F, T>
 where
     N: Drain<Ok = (), Err = io::Error>,
     S: Drain<Ok = (), Err = io::Error>,
     F: Drain<Ok = (), Err = io::Error>,
+    T: Drain<Ok = (), Err = io::Error>,
 {
     type Err = io::Error;
     type Ok = ();
@@ -122,6 +125,8 @@ where
             self.slow.as_ref().unwrap().log(record, values)
         } else if self.failed.is_some() && tag.starts_with("failed") {
             self.failed.as_ref().unwrap().log(record, values)
+        } else if self.table_stats.is_some() && tag.starts_with("table_stats") {
+            self.table_stats.as_ref().unwrap().log(record, values)
         } else {
             self.normal.log(record, values)
         }
@@ -137,6 +142,8 @@ pub struct Config {
     pub async_channel_len: i32,
     pub slow_query_path: Option<String>,
     pub failed_query_path: Option<String>,
+    // TODO: maybe we should not collect table stats in log way.
+    pub table_stats_path: Option<String>,
 }
 
 impl Default for Config {
@@ -147,6 +154,7 @@ impl Default for Config {
             async_channel_len: 102400,
             slow_query_path: None,
             failed_query_path: None,
+            table_stats_path: None,
         }
     }
 }
@@ -166,7 +174,8 @@ pub fn init_log(config: &Config) -> Result<RuntimeLevel, SetLoggerError> {
     let normal_drain = term_drainer();
     let slow_drain = file_drainer(&config.slow_query_path);
     let failed_drain = file_drainer(&config.failed_query_path);
-    let drain = LogDispatcher::new(normal_drain, slow_drain, failed_drain);
+    let table_stats_drain = file_drainer(&config.table_stats_path);
+    let drain = LogDispatcher::new(normal_drain, slow_drain, failed_drain, table_stats_drain);
 
     // Use async and init stdlog
     init_log_from_drain(
@@ -457,6 +466,7 @@ pub fn init_test_logger() {
     let term_drain = term_drainer();
     let drain = LogDispatcher::new(
         term_drain,
+        Option::<CeresFormat<PlainDecorator<File>>>::None,
         Option::<CeresFormat<PlainDecorator<File>>>::None,
         Option::<CeresFormat<PlainDecorator<File>>>::None,
     );

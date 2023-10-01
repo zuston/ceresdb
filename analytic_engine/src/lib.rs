@@ -121,6 +121,14 @@ pub struct Config {
     pub recover_mode: RecoverMode,
 
     pub remote_engine_client: remote_engine_client::config::Config,
+
+    pub table_stats: TableStatsOptions,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TableStatsOptions {
+    col_filter_stats_ttl: Option<ReadableDuration>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -158,6 +166,7 @@ impl Default for Config {
             wal: WalStorageConfig::RocksDB(Box::default()),
             remote_engine_client: remote_engine_client::config::Config::default(),
             recover_mode: RecoverMode::TableBased,
+            table_stats: TableStatsOptions::default(),
         }
     }
 }

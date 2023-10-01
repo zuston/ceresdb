@@ -98,6 +98,9 @@ impl Instance {
             table_data.space_id, table_data.name, table_data.id, request
         );
 
+        // Stats col filter heats.
+        table_data.metrics.stats.stats_col_filters(&request.predicate);
+
         let table_options = table_data.table_options();
         // Collect metrics.
         table_data.metrics.on_read_request_begin();

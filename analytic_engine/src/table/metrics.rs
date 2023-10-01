@@ -31,7 +31,10 @@ use prometheus::{
 };
 use table_engine::table::TableStats;
 
-use crate::table::version::MemtableStats;
+use crate::{
+    table::{table_stats::TableStatsImpl, version::MemtableStats},
+    TableStatsOptions,
+};
 
 const KB: f64 = 1024.0;
 
@@ -134,30 +137,13 @@ lazy_static! {
     // End of histograms.
 }
 
-#[derive(Default)]
-struct AtomicTableStats {
-    num_write: AtomicU64,
-    num_read: AtomicU64,
-    num_flush: AtomicU64,
-}
-
-impl From<&AtomicTableStats> for TableStats {
-    fn from(stats: &AtomicTableStats) -> Self {
-        Self {
-            num_write: stats.num_write.load(Ordering::Relaxed),
-            num_read: stats.num_read.load(Ordering::Relaxed),
-            num_flush: stats.num_flush.load(Ordering::Relaxed),
-        }
-    }
-}
-
 /// Table metrics.
 ///
 /// Now the registered labels won't remove from the metrics vec to avoid panic
 /// on concurrent removal.
 pub struct Metrics {
     // Stats of a single table.
-    stats: Arc<AtomicTableStats>,
+    pub stats: Arc<TableStatsImpl>,
 
     compaction_input_sst_size_histogram: Histogram,
     compaction_output_sst_size_histogram: Histogram,
@@ -179,10 +165,19 @@ pub struct Metrics {
     table_read_immutable_memtable: IntCounter,
 }
 
+impl Metrics {
+    pub fn new(table: String, table_stats_opt: TableStatsOptions) -> Self {
+        Self {
+            stats: Arc::new(TableStatsImpl::new(table, table_stats_opt)),
+            ..Default::default()
+        }
+    }
+}
+
 impl Default for Metrics {
     fn default() -> Self {
         Self {
-            stats: Arc::new(AtomicTableStats::default()),
+            stats: Arc::new(TableStatsImpl::default()),
             compaction_input_sst_size_histogram: TABLE_COMPACTION_SST_SIZE_HISTOGRAM
                 .with_label_values(&["input"]),
             compaction_output_sst_size_histogram: TABLE_COMPACTION_SST_SIZE_HISTOGRAM
@@ -355,7 +350,7 @@ impl Metrics {
 }
 
 pub struct LocalFlushMetrics {
-    stats: Arc<AtomicTableStats>,
+    stats: Arc<TableStatsImpl>,
 
     flush_duration_histogram: LocalHistogram,
     flush_sst_num_histogram: LocalHistogram,
