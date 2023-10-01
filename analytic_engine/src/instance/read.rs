@@ -99,7 +99,10 @@ impl Instance {
         );
 
         // Stats col filter heats.
-        table_data.metrics.stats.stats_col_filters(&request.predicate);
+        table_data
+            .metrics
+            .stats
+            .stats_col_filters(&request.predicate);
 
         let table_options = table_data.table_options();
         // Collect metrics.

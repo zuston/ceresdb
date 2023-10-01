@@ -101,13 +101,11 @@ impl ColumnFilterStats {
     }
 
     fn check_and_update_heats(&self, col_names: &HashSet<String>) {
-        dbg!("[Debug] check_and_update_heats");
         let heats = &mut *self.heats.lock().unwrap();
 
         // If exceeded deadline, pop and print the old heats, build the new heats then.
         let now = Instant::now();
         if now >= heats.deadline {
-            dbg!("[Debug] dump");
             let heat_info = heats.dump(&self.table);
             // TODO: just print log now.
             record_table_stats!("TableStats column filter heats:{}", heat_info);
